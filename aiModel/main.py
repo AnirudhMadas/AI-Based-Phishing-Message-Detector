@@ -6,29 +6,18 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import classification_report, accuracy_score
 import joblib
 
-
-print("✅ Model files saved successfully")
-
-
-
 df = pd.read_csv("Phishing_Email.csv")
-
 print(df.columns)
-
 df = df.rename(columns={
     df.columns[1]: 'text',
     df.columns[2]: 'label'
 })
-
 df['label'] = df['label'].map({
     'Safe Email': 0,
     'Phishing Email': 1
 })
-
 df = df.dropna(subset=['text', 'label'])
-
 print(df['label'].value_counts())
-
 def clean_text(text):
     if not isinstance(text, str):
         return ""
@@ -39,7 +28,6 @@ def clean_text(text):
     return text.strip()
 
 df['clean_text'] = df['text'].apply(clean_text)
-
 print(df[['text', 'clean_text']].head())
 
 X = df['clean_text']
@@ -52,7 +40,6 @@ X_train, X_test, y_train, y_test = train_test_split(
     stratify=y
 )
 
-
 vectorizer = TfidfVectorizer(
     max_features=6000,
     ngram_range=(1,2),
@@ -64,7 +51,6 @@ X_test_vec = vectorizer.transform(X_test)
 
 model = LogisticRegression(max_iter=1000)
 model.fit(X_train_vec, y_train)
-
 
 y_pred = model.predict(X_test_vec)
 
