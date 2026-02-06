@@ -4,6 +4,10 @@ from sklearn.model_selection import train_test_split
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import classification_report, accuracy_score
+import joblib
+
+
+print("✅ Model files saved successfully")
 
 
 
@@ -66,3 +70,7 @@ y_pred = model.predict(X_test_vec)
 
 print("Accuracy:", accuracy_score(y_test, y_pred))
 print(classification_report(y_test, y_pred))
+
+joblib.dump(model, "phishing_model.pkl")
+joblib.dump(vectorizer, "tfidf_vectorizer.pkl")
+
