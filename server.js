@@ -10,11 +10,8 @@ const SYSTEM_PHRASES = [
 ];
 
 app.post("/notify", async (req, res) => {
-
-  console.log("🔥 RAW BODY:", req.body);
   const { app: appName, title, body, time } = req.body;
 
-  // 🛑 System notification filter (SAFE)
   const isSystemNotification =
     !body ||
     body.trim().length < 3 ||
