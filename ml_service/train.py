@@ -7,7 +7,7 @@ from sklearn.metrics import classification_report, accuracy_score, confusion_mat
 import joblib
 
 # Load the SMS spam dataset
-df = pd.read_csv("datasets\spam.csv", encoding='latin-1')
+df = pd.read_csv("datasets/spam.csv", encoding='latin-1')
 
 print("="*60)
 print("DATASET LOADING")
