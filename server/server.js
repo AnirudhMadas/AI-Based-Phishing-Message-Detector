@@ -1,13 +1,15 @@
 import express from "express";
 import fetch from "node-fetch";
+import dotenv from "dotenv";
 
 const app = express();
 app.use(express.json());
+dotenv.config();
 
 // =======================
 // CONFIG
 // =======================
-const ML_API_URL = "http://127.0.0.1:8001/predict";
+const ML_API_URL = process.env.ML_API_URL;
 
 // System phrases to ignore
 const SYSTEM_PHRASES = [
@@ -214,6 +216,6 @@ async function analyzeWithAI(message) {
 // =======================
 // START SERVER
 // =======================
-app.listen(3000, () => {
-  console.log("🚀 Server running on http://localhost:3000");
+app.listen(process.env.PORT || 3000, () => {
+  console.log("🚀 Server running on http://localhost:" + (process.env.PORT || 3000));
 });
