@@ -20,13 +20,15 @@ def clean_text(text):
     text = re.sub(r"\S+@\S+", " EMAIL ", text)
     text = re.sub(r"\b\d{10,11}\b", " PHONE ", text)
     text = re.sub(r"\b\d{5}\b", " SHORTCODE ", text)
-    text = re.sub(r"\$\d+", " MONEY ", text)
-    text = re.sub(r"£\d+", " MONEY ", text)
-    text = re.sub(r"\b\d+\s*(dollars|pounds|gbp|usd)\b", " MONEY ", text)
     text = re.sub(r"\d+", " NUM ", text)
     text = re.sub(r"[^a-z\s]", " ", text)
     text = re.sub(r"\s+", " ", text)
     return text.strip()
+
+
+@app.get("/health")
+def health():
+    return {"status": "ok"}
 
 
 @app.post("/predict")
@@ -41,8 +43,3 @@ def predict(data: Message):
         "prediction": "phishing" if prediction == 1 else "safe",
         "confidence": round(float(probability), 4)
     }
-
-
-@app.get("/health")
-def health():
-    return {"status": "ok"}

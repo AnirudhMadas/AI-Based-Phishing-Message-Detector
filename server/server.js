@@ -1,21 +1,41 @@
 import express from "express";
 import fetch from "node-fetch";
 import dotenv from "dotenv";
+import rateLimit from "express-rate-limit";
+
+dotenv.config();
 
 const app = express();
 app.use(express.json());
-dotenv.config();
 
 // =======================
-// CONFIG
+// ENV VALIDATION
 // =======================
-const ML_API_URL = process.env.ML_API_URL;
+const { ML_API_URL, API_KEY, PORT } = process.env;
 
-// System phrases to ignore
+if (!ML_API_URL) {
+  throw new Error("❌ ML_API_URL not defined in environment variables");
+}
+
+if (!API_KEY) {
+  throw new Error("❌ API_KEY not defined in environment variables");
+}
+
+// =======================
+// RATE LIMITING
+// =======================
+const limiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 200,
+});
+app.use(limiter);
+
+// =======================
+// SYSTEM FILTERS
+// =======================
 const SYSTEM_PHRASES = [
   "doing work in the background",
   "checking for messages",
-  "is doing work",
   "background activity",
   "syncing",
   "updating",
@@ -24,27 +44,12 @@ const SYSTEM_PHRASES = [
   "accessibility service",
 ];
 
-// =======================
-// GLOBAL STATE (IMPORTANT)
-// =======================
-let lastServiceLog = 0;
 let lastMessage = "";
 let lastMessageTime = 0;
 
-// =======================
-// HELPERS
-// =======================
-function logServiceOnce(msg) {
-  const now = Date.now();
-  if (now - lastServiceLog > 10_000) {
-    console.log("⚠️ Ignored system notification:", msg);
-    lastServiceLog = now;
-  }
-}
-
 function isDuplicate(msg) {
   const now = Date.now();
-  if (msg === lastMessage && now - lastMessageTime < 5_000) {
+  if (msg === lastMessage && now - lastMessageTime < 5000) {
     return true;
   }
   lastMessage = msg;
@@ -53,13 +58,22 @@ function isDuplicate(msg) {
 }
 
 // =======================
-// ROUTE
+// HEALTH ROUTE
+// =======================
+app.get("/health", (req, res) => {
+  res.json({ status: "ok" });
+});
+
+// =======================
+// NOTIFY ROUTE
 // =======================
 app.post("/notify", async (req, res) => {
-  console.log("\n================ NEW NOTIFICATION ================");
-  console.log("➡️ RAW PAYLOAD:", JSON.stringify(req.body, null, 2));
-
   try {
+    // API KEY SECURITY
+    if (req.headers["x-api-key"] !== API_KEY) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+
     const {
       app: appName,
       title,
@@ -71,151 +85,75 @@ app.post("/notify", async (req, res) => {
       timestamp,
     } = req.body;
 
-    // Normalize message text
     const messageText =
       body || text || message || bigText || title || "";
 
-    console.log("📝 Extracted message text:", messageText);
-    console.log("📋 Available fields:", { body, text, message, bigText, title });
-
-    // -----------------------
-    // HARD FILTERS
-    // -----------------------
     if (!messageText.trim()) {
-      console.log("❌ Empty message, ignored");
       return res.json({ status: "ignored", reason: "empty" });
     }
 
-    const isSystemNotification =
-      !title &&
-      (messageText.includes(" is ") ||
-        messageText.includes(" in the background") ||
-        messageText.includes(" is running"));
-
-    if (isSystemNotification) {
-      console.log("⚠️ System notification detected");
-      return res.json({ status: "ignored", reason: "system_notification" });
-    }
-
     const lowerMessage = messageText.toLowerCase();
-    const matchedPhrase = SYSTEM_PHRASES.find(p =>
-      lowerMessage.includes(p)
-    );
 
-    if (matchedPhrase) {
-      logServiceOnce(`"${messageText}" (matched "${matchedPhrase}")`);
+    if (SYSTEM_PHRASES.some(p => lowerMessage.includes(p))) {
       return res.json({ status: "ignored", reason: "system_phrase" });
     }
 
     if (isDuplicate(messageText)) {
-      console.log("🔁 Duplicate message ignored");
       return res.json({ status: "ignored", reason: "duplicate" });
     }
 
-    // -----------------------
-    // VALID MESSAGE
-    // -----------------------
-    console.log("📩 Message received:", {
-      appName,
-      title,
-      body: messageText,
-      sender,
-      timestamp,
+    // =======================
+    // CALL ML WITH TIMEOUT
+    // =======================
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 5000);
+
+    const response = await fetch(ML_API_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ text: messageText }),
+      signal: controller.signal,
     });
 
-    // -----------------------
-    // SEND TO ML
-    // -----------------------
-    const aiResult = await analyzeWithAI(messageText);
+    clearTimeout(timeout);
 
-    // -----------------------
-    // POST-PROCESSING
-    // -----------------------
-    let finalResult = aiResult;
-
-    // Very short messages
-    if (
-      messageText.trim().length < 10 &&
-      aiResult.label === "phishing"
-    ) {
-      console.log("🔧 Override: too short to be phishing");
-      finalResult = {
-        label: "safe",
-        confidence: 0.95,
-        override: "too_short",
-      };
+    if (!response.ok) {
+      throw new Error(`ML API failed: ${response.status}`);
     }
 
-    // Casual chat patterns
-    const casualPatterns = [
-      /^(hey|hi|hello|yo|sup|wassup)\b/i,
-      /^(ok|okay|k|kk|thanks|thx|ty|lol|haha|sure)$/i,
-      /^(yes|no|yeah|yep|nope|maybe|idk)$/i,
-    ];
+    const aiResult = await response.json();
 
-    if (
-      casualPatterns.some(p => p.test(messageText)) &&
-      aiResult.label === "phishing"
-    ) {
-      console.log("🔧 Override: casual message");
-      finalResult = {
-        label: "safe",
-        confidence: 0.9,
-        override: "casual_message",
-      };
+    let finalLabel = aiResult.prediction;
+    let confidence = aiResult.confidence;
+
+    // Override for very short messages
+    if (messageText.length < 10 && finalLabel === "phishing") {
+      finalLabel = "safe";
+      confidence = 0.95;
     }
 
-    console.log("🧠 AI RESULT:", finalResult);
-
-    // -----------------------
-    // RESPONSE
-    // -----------------------
     return res.json({
       status: "analyzed",
-      source: appName,
-      prediction: finalResult.label,
-      confidence: finalResult.confidence,
-      ...(finalResult.override && { override: finalResult.override }),
+      source: appName || "unknown",
+      prediction: finalLabel,
+      confidence,
     });
 
   } catch (error) {
-    // 🔥 IMPORTANT FIX: full error visibility
-    console.error("❌ Error in /notify");
-    console.error("Message:", error.message);
-    console.error("Stack:", error.stack);
+    console.error("❌ Error in /notify:", error.message);
 
     return res.status(500).json({
       status: "error",
-      message: error.message,
+      message: "Internal server error",
     });
   }
 });
 
 // =======================
-// ML CALL
-// =======================
-async function analyzeWithAI(message) {
-  console.log("➡️ Sending to ML API:", message);
-
-  const response = await fetch(ML_API_URL, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ text: message }),
-  });
-
-  console.log("⬅️ ML API status:", response.status);
-
-  if (!response.ok) {
-    const text = await response.text();
-    throw new Error(`ML API failed: ${response.status} ${text}`);
-  }
-
-  return response.json();
-}
-
-// =======================
 // START SERVER
 // =======================
-app.listen(process.env.PORT || 3000, () => {
-  console.log("🚀 Server running on http://localhost:" + (process.env.PORT || 3000));
+app.listen(PORT || 3000, () => {
+  console.log(`🚀 Server running on port ${PORT || 3000}`);
 });
