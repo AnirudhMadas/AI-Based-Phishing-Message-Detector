@@ -61,16 +61,21 @@ function isDuplicate(msg) {
 // HEALTH ROUTE
 // =======================
 app.get("/health", (req, res) => {
-  res.json({ status: "ok" });
+  res.json({ status: "ok", service: "phishing-backend" });
 });
 
 // =======================
-// NOTIFY ROUTE
+// NOTIFY ROUTE (Main)
 // =======================
 app.post("/notify", async (req, res) => {
   try {
+    console.log("📩 Incoming request:", req.body);
+
+    // =======================
     // API KEY SECURITY
+    // =======================
     if (req.headers["x-api-key"] !== API_KEY) {
+      console.warn("⛔ Unauthorized attempt");
       return res.status(401).json({ error: "Unauthorized" });
     }
 
@@ -103,10 +108,10 @@ app.post("/notify", async (req, res) => {
     }
 
     // =======================
-    // CALL ML WITH TIMEOUT
+    // CALL ML SERVICE
     // =======================
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 5000);
+    const timeout = setTimeout(() => controller.abort(), 8000);
 
     const response = await fetch(ML_API_URL, {
       method: "POST",
@@ -128,17 +133,20 @@ app.post("/notify", async (req, res) => {
     let finalLabel = aiResult.prediction;
     let confidence = aiResult.confidence;
 
-    // Override for very short messages
+    // Override for short text false positives
     if (messageText.length < 10 && finalLabel === "phishing") {
       finalLabel = "safe";
       confidence = 0.95;
     }
+
+    console.log("🤖 ML Result:", finalLabel, confidence);
 
     return res.json({
       status: "analyzed",
       source: appName || "unknown",
       prediction: finalLabel,
       confidence,
+      message: messageText,
     });
 
   } catch (error) {
