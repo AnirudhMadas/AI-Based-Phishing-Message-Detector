@@ -1,17 +1,24 @@
 import pandas as pd
 import re
 import os
+import joblib
+
 from sklearn.model_selection import train_test_split
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import classification_report, accuracy_score, confusion_matrix
-import joblib
+from sklearn.pipeline import Pipeline
+from sklearn.metrics import (
+    accuracy_score,
+    classification_report,
+    confusion_matrix
+)
 
-# ===============================
+# =========================
 # LOAD DATASET
-# ===============================
+# =========================
 
 df = pd.read_csv("datasets/spam.csv", encoding="latin-1")
+
 df = df.iloc[:, :2]
 df.columns = ["label", "text"]
 
@@ -20,124 +27,138 @@ df["label"] = df["label"].map({
     "spam": 1
 })
 
-df = df.dropna(subset=["text", "label"])
+df = df.dropna()
 
 print("Dataset loaded:", df.shape)
 
-# ===============================
-# ADD CUSTOM EXAMPLES
-# ===============================
+# =========================
+# CUSTOM PHISHING DATA
+# =========================
 
-additional_phishing = [
-    "Your bank account is blocked verify immediately",
-    "URGENT: Your account has been suspended. Click here to verify",
-    "You've won $5000! Claim your prize now",
-    "Your package is waiting. Confirm delivery at this link",
-    "Verify your identity or account will be closed today",
+phishing_samples = [
+    "Your bank account has been blocked verify immediately",
+    "URGENT! Click this link to avoid suspension",
+    "Congratulations you won an iPhone click now",
+    "Your PayPal account is locked login immediately",
+    "Verify your OTP now",
+    "Your package is waiting confirm now",
+    "Free recharge available click here",
+    "You received money claim now",
+    "Limited time offer click now",
+    "Reset your password immediately",
+    "Suspicious login attempt detected verify now",
 ]
 
-additional_safe = [
-    "hey what's up",
-    "ok cool",
-    "thanks bro",
-    "see you tomorrow",
-    "running late, be there soon",
+safe_samples = [
+    "Hey bro where are you",
+    "Let's meet tomorrow",
+    "Can you call me later",
+    "Thank you",
+    "See you soon",
+    "Running late",
+    "Lunch at 2pm?",
+    "Happy birthday",
+    "Good morning",
 ]
 
-additional_df = pd.DataFrame({
-    "label": [1] * len(additional_phishing) + [0] * len(additional_safe),
-    "text": additional_phishing + additional_safe
+extra_df = pd.DataFrame({
+    "label": [1] * len(phishing_samples) + [0] * len(safe_samples),
+    "text": phishing_samples + safe_samples
 })
 
-df = pd.concat([df, additional_df], ignore_index=True)
+df = pd.concat([df, extra_df], ignore_index=True)
 
-print("After adding examples:", df.shape)
-
-# ===============================
-# CLEAN TEXT
-# ===============================
+# =========================
+# CLEANING
+# =========================
 
 def clean_text(text):
+
     if not isinstance(text, str):
         return ""
 
     text = text.lower()
-    text = re.sub(r"http\S+|www\.\S+", " URL ", text)
+
+    text = re.sub(r"http\S+|www\S+", " URL ", text)
     text = re.sub(r"\S+@\S+", " EMAIL ", text)
-    text = re.sub(r"\b\d{10,11}\b", " PHONE ", text)
-    text = re.sub(r"\b\d{5}\b", " SHORTCODE ", text)
     text = re.sub(r"\d+", " NUM ", text)
-    text = re.sub(r"[^a-z\s]", " ", text)
+
+    text = re.sub(r"[^a-zA-Z\s]", " ", text)
+
     text = re.sub(r"\s+", " ", text)
+
     return text.strip()
 
 df["clean_text"] = df["text"].apply(clean_text)
 
-# ===============================
-# TRAIN TEST SPLIT
-# ===============================
-
-X = df["clean_text"]
-y = df["label"]
+# =========================
+# SPLIT
+# =========================
 
 X_train, X_test, y_train, y_test = train_test_split(
-    X, y,
+    df["clean_text"],
+    df["label"],
     test_size=0.2,
     random_state=42,
-    stratify=y
+    stratify=df["label"]
 )
 
-# ===============================
-# TF-IDF VECTORIZATION
-# ===============================
+# =========================
+# PIPELINE
+# =========================
 
-vectorizer = TfidfVectorizer(
-    max_features=5000,
-    ngram_range=(1, 3),
-    stop_words="english",
-    min_df=2,
-    max_df=0.95,
-    sublinear_tf=True
-)
+pipeline = Pipeline([
+    (
+        "tfidf",
+        TfidfVectorizer(
+            max_features=8000,
+            ngram_range=(1, 3),
+            stop_words="english",
+            sublinear_tf=True
+        )
+    ),
+    (
+        "model",
+        LogisticRegression(
+            max_iter=2000,
+            class_weight="balanced",
+            solver="liblinear"
+        )
+    )
+])
 
-X_train_vec = vectorizer.fit_transform(X_train)
-X_test_vec = vectorizer.transform(X_test)
+# =========================
+# TRAIN
+# =========================
 
-# ===============================
-# MODEL TRAINING
-# ===============================
+pipeline.fit(X_train, y_train)
 
-model = LogisticRegression(
-    max_iter=1000,
-    class_weight="balanced",
-    solver="liblinear"
-)
+# =========================
+# EVALUATE
+# =========================
 
-model.fit(X_train_vec, y_train)
+predictions = pipeline.predict(X_test)
 
-# ===============================
-# EVALUATION
-# ===============================
+accuracy = accuracy_score(y_test, predictions)
 
-y_pred = model.predict(X_test_vec)
-
-accuracy = accuracy_score(y_test, y_pred)
-print(f"\nAccuracy: {accuracy:.4f}")
+print("\nAccuracy:", round(accuracy * 100, 2), "%")
 
 print("\nConfusion Matrix:")
-print(confusion_matrix(y_test, y_pred))
+print(confusion_matrix(y_test, predictions))
 
 print("\nClassification Report:")
-print(classification_report(y_test, y_pred, target_names=["Safe", "Phishing"]))
+print(classification_report(
+    y_test,
+    predictions,
+    target_names=["Safe", "Phishing"]
+))
 
-# ===============================
-# SAVE MODEL
-# ===============================
+# =========================
+# SAVE
+# =========================
 
 os.makedirs("model", exist_ok=True)
 
-joblib.dump(model, "model/phishing_model.pkl")
-joblib.dump(vectorizer, "model/tfidf_vectorizer.pkl")
+joblib.dump(pipeline, "model/phishing_pipeline.pkl")
 
-print("\n✅ Model and vectorizer saved inside /model folder")
-print("🎉 Training complete")
+print("\n✅ Model saved successfully")

@@ -6,162 +6,226 @@ import rateLimit from "express-rate-limit";
 dotenv.config();
 
 const app = express();
+
 app.use(express.json());
 
-// =======================
-// ENV VALIDATION
-// =======================
-const { ML_API_URL, API_KEY, PORT } = process.env;
+// =========================
+// ENV
+// =========================
+
+const PORT = process.env.PORT || 3000;
+const ML_API_URL = process.env.ML_API_URL;
+const API_KEY = process.env.API_KEY;
 
 if (!ML_API_URL) {
-  throw new Error("❌ ML_API_URL not defined in environment variables");
+  throw new Error("ML_API_URL missing");
 }
 
 if (!API_KEY) {
-  throw new Error("❌ API_KEY not defined in environment variables");
+  throw new Error("API_KEY missing");
 }
 
-// =======================
-// RATE LIMITING
-// =======================
+// =========================
+// RATE LIMIT
+// =========================
+
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 200,
+  max: 300,
 });
+
 app.use(limiter);
 
-// =======================
-// SYSTEM FILTERS
-// =======================
-const SYSTEM_PHRASES = [
-  "doing work in the background",
-  "checking for messages",
-  "background activity",
-  "syncing",
-  "updating",
-  "running in background",
-  "notification listener",
-  "accessibility service",
-];
+// =========================
+// DUPLICATE FILTER
+// =========================
 
-let lastMessage = "";
-let lastMessageTime = 0;
+let previousMessage = "";
+let previousTime = 0;
 
-function isDuplicate(msg) {
+function isDuplicate(message) {
+
   const now = Date.now();
-  if (msg === lastMessage && now - lastMessageTime < 5000) {
+
+  if (
+    message === previousMessage &&
+    now - previousTime < 5000
+  ) {
     return true;
   }
-  lastMessage = msg;
-  lastMessageTime = now;
+
+  previousMessage = message;
+  previousTime = now;
+
   return false;
 }
 
-// =======================
-// HEALTH ROUTE
-// =======================
+// =========================
+// IGNORE PHRASES
+// =========================
+
+const SYSTEM_PHRASES = [
+  "running in background",
+  "checking messages",
+  "syncing",
+  "accessibility service",
+  "notification listener",
+];
+
+// =========================
+// HEALTH
+// =========================
+
 app.get("/health", (req, res) => {
-  res.json({ status: "ok", service: "phishing-backend" });
+
+  res.json({
+    status: "ok",
+    service: "backend"
+  });
+
 });
 
-// =======================
-// NOTIFY ROUTE (Main)
-// =======================
-app.post("/notify", async (req, res) => {
-  try {
-    console.log("📩 Incoming request:", req.body);
+// =========================
+// MAIN ROUTE
+// =========================
 
-    // =======================
-    // API KEY SECURITY
-    // =======================
+app.post("/notify", async (req, res) => {
+
+  try {
+
     if (req.headers["x-api-key"] !== API_KEY) {
-      console.warn("⛔ Unauthorized attempt");
-      return res.status(401).json({ error: "Unauthorized" });
+
+      return res.status(401).json({
+        error: "Unauthorized"
+      });
+
     }
 
     const {
-      app: appName,
-      title,
       body,
       text,
       message,
+      title,
       bigText,
-      sender,
-      timestamp,
+      app: appName
     } = req.body;
 
     const messageText =
-      body || text || message || bigText || title || "";
+      body ||
+      text ||
+      message ||
+      bigText ||
+      title ||
+      "";
 
     if (!messageText.trim()) {
-      return res.json({ status: "ignored", reason: "empty" });
+
+      return res.json({
+        status: "ignored",
+        reason: "empty"
+      });
+
     }
 
-    const lowerMessage = messageText.toLowerCase();
+    const lower = messageText.toLowerCase();
 
-    if (SYSTEM_PHRASES.some(p => lowerMessage.includes(p))) {
-      return res.json({ status: "ignored", reason: "system_phrase" });
+    if (
+      SYSTEM_PHRASES.some(p => lower.includes(p))
+    ) {
+
+      return res.json({
+        status: "ignored",
+        reason: "system_message"
+      });
+
     }
 
     if (isDuplicate(messageText)) {
-      return res.json({ status: "ignored", reason: "duplicate" });
+
+      return res.json({
+        status: "ignored",
+        reason: "duplicate"
+      });
+
     }
 
-    // =======================
+    // =========================
     // CALL ML SERVICE
-    // =======================
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 8000);
+    // =========================
 
-    const response = await fetch(ML_API_URL, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ text: messageText }),
-      signal: controller.signal,
-    });
+    const controller = new AbortController();
+
+    const timeout = setTimeout(() => {
+      controller.abort();
+    }, 8000);
+
+    const response = await fetch(
+      `${ML_API_URL}/predict`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          text: messageText
+        }),
+        signal: controller.signal
+      }
+    );
 
     clearTimeout(timeout);
 
     if (!response.ok) {
-      throw new Error(`ML API failed: ${response.status}`);
+
+      throw new Error(
+        `ML Service Error ${response.status}`
+      );
+
     }
 
-    const aiResult = await response.json();
+    const result = await response.json();
 
-    let finalLabel = aiResult.prediction;
-    let confidence = aiResult.confidence;
-
-    // Override for short text false positives
-    if (messageText.length < 10 && finalLabel === "phishing") {
-      finalLabel = "safe";
-      confidence = 0.95;
-    }
-
-    console.log("🤖 ML Result:", finalLabel, confidence);
+    // =========================
+    // FINAL RESPONSE
+    // =========================
 
     return res.json({
+
       status: "analyzed",
-      source: appName || "unknown",
-      prediction: finalLabel,
-      confidence,
-      message: messageText,
+
+      source_app: appName || "unknown",
+
+      prediction: result.prediction,
+
+      confidence: result.confidence,
+
+      threat_score: result.threat_score,
+
+      contains_url: result.contains_url,
+
+      message: messageText
+
     });
 
   } catch (error) {
-    console.error("❌ Error in /notify:", error.message);
+
+    console.error("Server Error:", error.message);
 
     return res.status(500).json({
       status: "error",
-      message: "Internal server error",
+      error: error.message
     });
+
   }
+
 });
 
-// =======================
-// START SERVER
-// =======================
-app.listen(PORT || 3000, () => {
-  console.log(`🚀 Server running on port ${PORT || 3000}`);
+// =========================
+// START
+// =========================
+
+app.listen(PORT, () => {
+
+  console.log(`🚀 Backend running on ${PORT}`);
+
 });

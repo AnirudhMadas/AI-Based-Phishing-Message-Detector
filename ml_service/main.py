@@ -3,43 +3,106 @@ from pydantic import BaseModel
 import joblib
 import re
 
-app = FastAPI(title="Phishing Detection API")
+app = FastAPI(title="AI Phishing Detection API")
 
-# Load model artifacts
-model = joblib.load("model/phishing_model.pkl")
-vectorizer = joblib.load("model/tfidf_vectorizer.pkl")
+# =========================
+# LOAD MODEL
+# =========================
 
+model = joblib.load("model/phishing_pipeline.pkl")
+
+# =========================
+# REQUEST MODEL
+# =========================
 
 class Message(BaseModel):
     text: str
 
+# =========================
+# SUSPICIOUS KEYWORDS
+# =========================
 
-def clean_text(text):
-    text = text.lower()
-    text = re.sub(r"http\S+|www\.\S+", " URL ", text)
-    text = re.sub(r"\S+@\S+", " EMAIL ", text)
-    text = re.sub(r"\b\d{10,11}\b", " PHONE ", text)
-    text = re.sub(r"\b\d{5}\b", " SHORTCODE ", text)
-    text = re.sub(r"\d+", " NUM ", text)
-    text = re.sub(r"[^a-z\s]", " ", text)
-    text = re.sub(r"\s+", " ", text)
-    return text.strip()
+SUSPICIOUS_KEYWORDS = [
+    "click",
+    "verify",
+    "urgent",
+    "winner",
+    "free",
+    "claim",
+    "password",
+    "otp",
+    "bank",
+    "limited offer",
+    "login",
+    "suspended",
+]
 
+# =========================
+# URL DETECTION
+# =========================
+
+def contains_url(text):
+    url_pattern = r"(https?://\S+|www\.\S+)"
+    return bool(re.search(url_pattern, text))
+
+# =========================
+# THREAT SCORE
+# =========================
+
+def calculate_threat_score(text):
+
+    score = 0
+
+    lower = text.lower()
+
+    for word in SUSPICIOUS_KEYWORDS:
+        if word in lower:
+            score += 10
+
+    if contains_url(text):
+        score += 30
+
+    if len(re.findall(r"\d+", text)) > 3:
+        score += 10
+
+    return min(score, 100)
+
+# =========================
+# ROUTES
+# =========================
+
+@app.get("/")
+def root():
+    return {
+        "status": "running",
+        "service": "AI Phishing Detector"
+    }
 
 @app.get("/health")
 def health():
-    return {"status": "ok"}
-
+    return {
+        "status": "ok"
+    }
 
 @app.post("/predict")
 def predict(data: Message):
-    clean = clean_text(data.text)
-    vec = vectorizer.transform([clean])
 
-    prediction = model.predict(vec)[0]
-    probability = model.predict_proba(vec)[0].max()
+    text = data.text.strip()
+
+    prediction = model.predict([text])[0]
+
+    probabilities = model.predict_proba([text])[0]
+
+    confidence = round(float(max(probabilities)), 4)
+
+    threat_score = calculate_threat_score(text)
+
+    label = "phishing" if prediction == 1 else "safe"
 
     return {
-        "prediction": "phishing" if prediction == 1 else "safe",
-        "confidence": round(float(probability), 4)
+        "prediction": label,
+        "confidence": confidence,
+        "threat_score": threat_score,
+        "contains_url": contains_url(text),
+        "message_length": len(text)
     }
